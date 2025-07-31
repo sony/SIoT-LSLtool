@@ -123,7 +123,7 @@ After the installation, you can start the bellow docs.
 
 - [**Few-Shot Object Detection (FSOD)**](documents/README_FSOD.md)
 - [**Weakly Supervised Instance Segmentation (WSIS)**](documents/README_WSIS.md) 
-- [**Few-Shot Instance Segmentation (FSIS)**](documents/README_SAM.md)
+- [**Few-Shot Instance Segmentation (FSIS)**](documents/README_FSIS.md)
 
 Second, Here are the docs for how to collaborate LSL tool and CVAT / label-studio.
 Please refer to [**Label Studio**](documents/README_labelstudio.md) and [**CVAT**](documents/README_cvat.md) to use lsl-tools with these labeling tools.
@@ -166,7 +166,7 @@ Here is the instructions that will walk you how to generate pseudo labels for di
 
 - [**FSOD**](documents/README_FSOD.md)
 - [**WSIS**](documents/README_WSIS.md) 
-- [**FSIS**](documents/README_SAM.md)
+- [**FSIS**](documents/README_FSIS.md)
 
 ### Labeling Tools
 
