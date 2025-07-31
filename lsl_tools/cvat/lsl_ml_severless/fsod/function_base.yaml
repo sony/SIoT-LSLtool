@@ -1,0 +1,32 @@
+metadata:
+  name: lsl_fsod_demo
+  namespace: cvat
+  annotations:
+    name: lsl_fsod
+    type: detector
+    framework: pytorch
+    spec: |
+      [{ "id": 1, "name": "class_name" }]
+spec:
+  description: LSL Tools fsod model 
+  runtime: 'python:3.8'
+  handler: main:handler
+  eventTimeout: 30s
+  build:
+    image: docker-image-name
+    baseImage: zerorpc_demo:v1
+
+  triggers:
+    myHttpTrigger:
+      maxWorkers: 1
+      kind: 'http'
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        maxRequestBodySize: 33554432 # 32MB
+
+  platform:
+    attributes:
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume

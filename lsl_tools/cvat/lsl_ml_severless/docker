@@ -1,0 +1,14 @@
+#!/bin/bash
+# echo "$@"
+if [ $2 == "-p" ];then
+    EXEC_PARAMS=("${@:4}")
+    # echo "Mod start"
+    # echo "docker run --add-host='host.docker.internal:host-gateway' -p $3 ${EXEC_PARAMS[@]}"
+    # echo "Mod stop"
+    # /usr/bin/docker run -p $3 --add-host="host.docker.internal:host-gateway" ${EXEC_PARAMS[@]}
+    /usr/bin/docker run -p $3  --add-host="host.docker.internal:host-gateway" "${EXEC_PARAMS[@]}"
+    # /usr/bin/docker "$@"
+
+else
+    /usr/bin/docker "$@"
+fi

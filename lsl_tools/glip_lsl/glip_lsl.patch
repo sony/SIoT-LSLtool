@@ -1,0 +1,866 @@
+diff --git a/maskrcnn_benchmark/config/defaults.py b/maskrcnn_benchmark/config/defaults.py
+index bd62a9e..b0cd8db 100644
+--- a/maskrcnn_benchmark/config/defaults.py
++++ b/maskrcnn_benchmark/config/defaults.py
+@@ -25,6 +25,7 @@ _C.MODEL.BOX_ON = True
+ _C.MODEL.MASK_ON = False
+ _C.MODEL.KEYPOINT_ON = False
+ _C.MODEL.DEVICE = "cuda"
++_C.MODEL.USE_CHECKPOINT = False
+ 
+ _C.MODEL.META_ARCHITECTURE = "GeneralizedRCNN"
+ 
+diff --git a/maskrcnn_benchmark/csrc/cuda/ROIAlign_cuda.cu b/maskrcnn_benchmark/csrc/cuda/ROIAlign_cuda.cu
+index 9ed1a0a..730e3ab 100644
+--- a/maskrcnn_benchmark/csrc/cuda/ROIAlign_cuda.cu
++++ b/maskrcnn_benchmark/csrc/cuda/ROIAlign_cuda.cu
+@@ -272,7 +272,7 @@ at::Tensor ROIAlign_forward_cuda(const at::Tensor& input,
+   auto output_size = num_rois * pooled_height * pooled_width * channels;
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+-  dim3 grid(std::min(THCCeilDiv(output_size, 512L), 4096L));
++  dim3 grid(std::min(THCCeilDiv((long)output_size, 512L), 4096L));
+   dim3 block(512);
+ 
+   if (output.numel() == 0) {
+@@ -317,7 +317,7 @@ at::Tensor ROIAlign_backward_cuda(const at::Tensor& grad,
+ 
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+-  dim3 grid(std::min(THCCeilDiv(grad.numel(), 512L), 4096L));
++  dim3 grid(std::min(THCCeilDiv((long)grad.numel(), 512L), 4096L));
+   dim3 block(512);
+ 
+   // handle possibly empty gradients
+diff --git a/maskrcnn_benchmark/csrc/cuda/ROIPool_cuda.cu b/maskrcnn_benchmark/csrc/cuda/ROIPool_cuda.cu
+index 60fc9fb..8481bbd 100644
+--- a/maskrcnn_benchmark/csrc/cuda/ROIPool_cuda.cu
++++ b/maskrcnn_benchmark/csrc/cuda/ROIPool_cuda.cu
+@@ -126,7 +126,7 @@ std::tuple<at::Tensor, at::Tensor> ROIPool_forward_cuda(const at::Tensor& input,
+ 
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+-  dim3 grid(std::min(THCCeilDiv(output_size, 512L), 4096L));
++  dim3 grid(std::min(THCCeilDiv((long)output_size, 512L), 4096L));
+   dim3 block(512);
+ 
+   if (output.numel() == 0) {
+@@ -173,7 +173,7 @@ at::Tensor ROIPool_backward_cuda(const at::Tensor& grad,
+ 
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+-  dim3 grid(std::min(THCCeilDiv(grad.numel(), 512L), 4096L));
++  dim3 grid(std::min(THCCeilDiv((long)grad.numel(), 512L), 4096L));
+   dim3 block(512);
+ 
+   // handle possibly empty gradients
+diff --git a/maskrcnn_benchmark/csrc/cuda/SigmoidFocalLoss_cuda.cu b/maskrcnn_benchmark/csrc/cuda/SigmoidFocalLoss_cuda.cu
+index 8aeceae..597a4a2 100644
+--- a/maskrcnn_benchmark/csrc/cuda/SigmoidFocalLoss_cuda.cu
++++ b/maskrcnn_benchmark/csrc/cuda/SigmoidFocalLoss_cuda.cu
+@@ -117,7 +117,7 @@ at::Tensor SigmoidFocalLoss_forward_cuda(
+   auto losses_size = num_samples * logits.size(1);
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+-  dim3 grid(std::min(THCCeilDiv(losses_size, 512L), 4096L));
++  dim3 grid(std::min(THCCeilDiv((long)losses_size, 512L), 4096L));
+   dim3 block(512);
+ 
+   if (losses.numel() == 0) {
+@@ -161,7 +161,7 @@ at::Tensor SigmoidFocalLoss_backward_cuda(
+   auto d_logits_size = num_samples * logits.size(1);
+   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+-  dim3 grid(std::min(THCCeilDiv(d_logits_size, 512L), 4096L));
++  dim3 grid(std::min(THCCeilDiv((long)d_logits_size, 512L), 4096L));
+   dim3 block(512);
+ 
+   if (d_logits.numel() == 0) {
+diff --git a/maskrcnn_benchmark/data/build.py b/maskrcnn_benchmark/data/build.py
+index 14b5973..db4cb9b 100644
+--- a/maskrcnn_benchmark/data/build.py
++++ b/maskrcnn_benchmark/data/build.py
+@@ -16,7 +16,7 @@ from .collate_batch import BatchCollator, BBoxAugCollator
+ from .transforms import build_transforms
+ 
+ from transformers import AutoTokenizer
+-from .datasets.duplicate_dataset import create_duplicate_dataset
++from .datasets.duplicate_dataset import create_duplicate_dataset, CombineDupDataset
+ 
+ def build_dataset(cfg, dataset_list, transforms, dataset_catalog, is_train=True, class_concat=False, extra_args={}):
+     """
+@@ -90,8 +90,11 @@ def build_dataset(cfg, dataset_list, transforms, dataset_catalog, is_train=True,
+             copy = -1 # do not ever copy test
+         
+         if copy != -1:
+-            new_factory = create_duplicate_dataset(factory)
+-            dataset = new_factory(copy=copy, **args)
++            # new_factory = create_duplicate_dataset(factory)
++            base_dataset = factory(**args)
++            new_factory = CombineDupDataset
++            dataset = new_factory(copy=copy, base_dataset=base_dataset)
++            del base_dataset
+         else:
+             # make dataset from factory
+             dataset = factory(**args)
+@@ -283,7 +286,7 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, num_replicas=None
+     aspect_grouping = [1] if cfg.DATALOADER.ASPECT_RATIO_GROUPING else []
+ 
+     paths_catalog = import_file(
+-        "maskrcnn_benchmark.config.paths_catalog", cfg.PATHS_CATALOG, True
++        "config.paths_catalog", cfg.PATHS_CATALOG, True
+     )
+ 
+     DatasetCatalog = paths_catalog.DatasetCatalog
+@@ -404,6 +407,10 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, num_replicas=None
+             extra_args["tokenizer"] = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32", from_slow=True, mask_token='ðŁĴĳ</w>')
+         else:
+             extra_args["tokenizer"] = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32", from_slow=True)
++    elif cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "bert-base-uncased":
++        weight_path = os.path.join(os.environ["PRETRAIN_WEIGHT_DIR"], "glip", "bert-base-uncased")
++        if not os.path.exists(weight_path): raise Exception("No bert-base-uncased pretrained weight, please download it by download_pretrained_models.py")
++        extra_args['tokenizer'] = AutoTokenizer.from_pretrained(weight_path)
+     else:
+         extra_args['tokenizer'] = AutoTokenizer.from_pretrained(cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE)
+ 
+@@ -484,6 +491,6 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, num_replicas=None
+     if is_train and not cfg.DATASETS.ALTERNATIVE_TRAINING and not cfg.DATASETS.MULTISTAGE_TRAINING:
+         # during training, a single (possibly concatenated) data_loader is returned
+         assert len(data_loaders) == 1
+-        return data_loaders[0]
++        return data_loaders[0], dataset
+ 
+     return data_loaders
+diff --git a/maskrcnn_benchmark/data/datasets/coco.py b/maskrcnn_benchmark/data/datasets/coco.py
+index 095af9e..78a2ade 100644
+--- a/maskrcnn_benchmark/data/datasets/coco.py
++++ b/maskrcnn_benchmark/data/datasets/coco.py
+@@ -223,10 +223,10 @@ class COCODataset(CocoDetection):
+             classes = torch.ones_like(classes)
+         target.add_field("labels", classes)
+ 
+-        if anno and "segmentation" in anno[0]:
+-            masks = [obj["segmentation"] for obj in anno]
+-            masks = SegmentationMask(masks, img.size, mode='poly')
+-            target.add_field("masks", masks)
++        # if anno and "segmentation" in anno[0]:
++        #     masks = [obj["segmentation"] for obj in anno]
++        #     masks = SegmentationMask(masks, img.size, mode='poly')
++        #     target.add_field("masks", masks)
+ 
+         if anno and "cbox" in anno[0]:
+             cboxes = [obj["cbox"] for obj in anno]
+diff --git a/maskrcnn_benchmark/data/datasets/duplicate_dataset.py b/maskrcnn_benchmark/data/datasets/duplicate_dataset.py
+index 4c3506c..856709f 100644
+--- a/maskrcnn_benchmark/data/datasets/duplicate_dataset.py
++++ b/maskrcnn_benchmark/data/datasets/duplicate_dataset.py
+@@ -3,9 +3,7 @@ from typing import TypeVar, Optional, Iterator
+ 
+ import torch
+ from torch.utils.data import Sampler, Dataset
+-import torch.distributed as dist
+-import random
+-import numpy as np
++import torchvision
+ 
+ 
+ def create_duplicate_dataset(DatasetBaseClass):
+@@ -29,3 +27,20 @@ def create_duplicate_dataset(DatasetBaseClass):
+             return super(DupDataset, self).get_img_info(true_index)
+ 
+     return DupDataset
++
++class CombineDupDataset(torchvision.datasets.CocoDetection):
++    def __init__(self, copy, base_dataset):
++        self.copy = copy
++        self.base_dataset = base_dataset
++        self.length = self.base_dataset.__len__()
++
++    def __len__(self):
++        return self.copy * self.length
++
++    def __getitem__(self, index):
++        true_index = index % self.length
++        return self.base_dataset.__getitem__(true_index)
++
++    def get_img_info(self, index):
++        true_index = index % self.length
++        return self.base_dataset.get_img_info(true_index)
+diff --git a/maskrcnn_benchmark/data/datasets/evaluation/box_aug.py b/maskrcnn_benchmark/data/datasets/evaluation/box_aug.py
+index da7e5d1..7f354dc 100644
+--- a/maskrcnn_benchmark/data/datasets/evaluation/box_aug.py
++++ b/maskrcnn_benchmark/data/datasets/evaluation/box_aug.py
+@@ -62,6 +62,73 @@ def im_detect_bbox_aug(model, images, device, captions=None, positive_map_label_
+     return results
+ 
+ 
++def im_detect_bbox_aug_proposals(model, images, device, captions=None, positive_map_label_to_token=None):
++    # Collect detections computed under different transformations
++    boxlists_ts = []
++    for _ in range(len(images)):
++        boxlists_ts.append([])
++
++    def add_preds_t(boxlists_t):
++        for i, boxlist_t in enumerate(boxlists_t):
++            # Resize the boxlist as the first one
++            boxlists_ts[i].append(boxlist_t.resize(images[i].size))
++
++    # Compute detections at different scales
++    if len(cfg.TEST.RANGES)==len(cfg.TEST.SCALES):
++        keep_ranges = cfg.TEST.RANGES
++    else:
++        keep_ranges = [None for _ in cfg.TEST.SCALES]
++
++    for scale, keep_range in zip(cfg.TEST.SCALES, keep_ranges):
++        max_size = cfg.TEST.MAX_SIZE
++        boxlists_scl = im_detect_bbox_scale(
++            model, images, scale, max_size, device,
++            captions=captions,
++            positive_map_label_to_token=positive_map_label_to_token,
++        )
++        if keep_range is not None:
++            boxlists_scl = remove_boxes(boxlists_scl, *keep_range)
++        add_preds_t(boxlists_scl)
++
++        if cfg.TEST.FLIP:
++            boxlists_scl_hf = im_detect_bbox_scale(
++                model, images, scale, max_size, device,
++                captions=captions,
++                positive_map_label_to_token=positive_map_label_to_token,
++                hflip=True
++            )
++            if keep_range is not None:
++                boxlists_scl_hf = remove_boxes(boxlists_scl_hf, *keep_range)
++            add_preds_t(boxlists_scl_hf)
++
++    # Merge boxlists detected by different bbox aug params
++    boxlists = []
++    for i, boxlist_ts in enumerate(boxlists_ts):
++        bbox = torch.cat([boxlist_t.bbox for boxlist_t in boxlist_ts])
++        scores = torch.cat([boxlist_t.get_field('scores') for boxlist_t in boxlist_ts])
++        labels = torch.cat([boxlist_t.get_field('labels') for boxlist_t in boxlist_ts])
++        boxlist = BoxList(bbox, boxlist_ts[0].size, boxlist_ts[0].mode)
++        boxlist.add_field('scores', scores)
++        boxlist.add_field('labels', labels)
++        boxlists.append(boxlist)
++    results = merge_result_from_multi_scales(boxlists)
++    return results
++
++
++def detect_bbox(model, image, transform, device,
++                captions=None,
++                positive_map_label_to_token=None
++                ):
++    image = tuple([transform(image)])
++    image = to_image_list(image, cfg.DATALOADER.SIZE_DIVISIBILITY)
++    if captions is None:
++        return model(image.to(device))
++    else:
++        return model(image.to(device),
++                     captions=captions,
++                     positive_map=positive_map_label_to_token
++                     )
++
+ def im_detect_bbox(model, images, target_scale, target_max_size, device,
+                    captions=None,
+                    positive_map_label_to_token=None
+diff --git a/maskrcnn_benchmark/data/datasets/evaluation/coco/coco_eval.py b/maskrcnn_benchmark/data/datasets/evaluation/coco/coco_eval.py
+index be79d74..08b5103 100644
+--- a/maskrcnn_benchmark/data/datasets/evaluation/coco/coco_eval.py
++++ b/maskrcnn_benchmark/data/datasets/evaluation/coco/coco_eval.py
+@@ -65,21 +65,21 @@ def do_coco_evaluation(
+     for iou_type in iou_types:
+         with tempfile.NamedTemporaryFile() as f:
+             file_path = f.name
+-            if output_folder:
+-                file_path = os.path.join(output_folder, iou_type + ".json")
+-            if dataset.coco:
+-                res = evaluate_predictions_on_coco(
+-                    dataset.coco, coco_results[iou_type], file_path, iou_type
+-                )
+-                results.update(res)
+-            elif output_folder:
+-                with open(file_path, "w") as f:
+-                    json.dump(coco_results[iou_type], f)
++        if output_folder:
++            file_path = os.path.join(output_folder, iou_type + ".json")
++        if dataset.coco:
++            res = evaluate_predictions_on_coco(
++                dataset.coco, coco_results[iou_type], file_path, iou_type
++            )
++            results.update(res)
++        elif output_folder:
++            with open(file_path, "w") as f:
++                json.dump(coco_results[iou_type], f)         
+ 
+     logger.info(results)
+     check_expected_results(results, expected_results, expected_results_sigma_tol)
+-    if output_folder:
+-        torch.save(results, os.path.join(output_folder, "coco_results.pth"))
++    # if output_folder:
++    #     torch.save(results, os.path.join(output_folder, "coco_results.pth"))
+     return results, coco_results
+ 
+ 
+diff --git a/maskrcnn_benchmark/data/datasets/modulated_coco.py b/maskrcnn_benchmark/data/datasets/modulated_coco.py
+index 23f6d36..40904ef 100644
+--- a/maskrcnn_benchmark/data/datasets/modulated_coco.py
++++ b/maskrcnn_benchmark/data/datasets/modulated_coco.py
+@@ -130,7 +130,7 @@ class CocoGrounding(torchvision.datasets.CocoDetection):
+     def __getitem__(self, idx):
+         img, tgt = super(CocoGrounding, self).__getitem__(idx)
+         image_id = self.ids[idx]
+-        tgt = [obj for obj in tgt if obj["iscrowd"] == 0]
++        # tgt = [obj for obj in tgt if obj["iscrowd"] == 0]
+         boxes = [obj["bbox"] for obj in tgt]
+         boxes = torch.as_tensor(boxes).reshape(-1, 4)  # guard against no boxes
+         target = BoxList(boxes, img.size, mode="xywh").convert("xyxy")
+diff --git a/maskrcnn_benchmark/engine/inference.py b/maskrcnn_benchmark/engine/inference.py
+index 62ad353..51798cc 100644
+--- a/maskrcnn_benchmark/engine/inference.py
++++ b/maskrcnn_benchmark/engine/inference.py
+@@ -10,15 +10,17 @@ from tqdm import tqdm
+ from collections import defaultdict
+ 
+ from maskrcnn_benchmark.data.datasets.evaluation import evaluate, im_detect_bbox_aug
+-from ..utils.comm import is_main_process
+-from ..utils.comm import all_gather
+-from ..utils.comm import synchronize
++from maskrcnn_benchmark.utils.comm import is_main_process
++from maskrcnn_benchmark.utils.comm import all_gather
++from maskrcnn_benchmark.utils.comm import synchronize
+ import pdb
+ from maskrcnn_benchmark.data.datasets.evaluation.flickr.flickr_eval import FlickrEvaluator
+ from maskrcnn_benchmark.structures.bounding_box import BoxList
+ import matplotlib.pyplot as plt
+ import matplotlib.pylab as pylab
+ from maskrcnn_benchmark.data.datasets.tsv import load_from_yaml_file
++
++
+ def imshow(img, file_name = "tmp.jpg"):
+     plt.imshow(img[:, :, [2, 1, 0]])
+     plt.axis("off")
+@@ -175,6 +177,38 @@ def chunks(lst, n):
+ 
+     return all_
+ 
++def create_queries_and_maps_from_categories(categories, cfg):
++    #one_hot = dataset.one_hot
++
++    labels = []
++    label_list = []
++    keys = list(categories.keys())
++    keys.sort()
++    for i in keys:
++        labels.append(i)
++        label_list.append(categories[i])
++
++    if cfg.TEST.CHUNKED_EVALUATION != -1:
++        labels = chunks(labels, cfg.TEST.CHUNKED_EVALUATION)
++        label_list = chunks(label_list, cfg.TEST.CHUNKED_EVALUATION)
++    else:
++        labels = [labels]
++        label_list = [label_list]
++
++    all_queries = []
++    all_positive_map_label_to_token = []
++
++    for i in range(len(labels)):
++        labels_i = labels[i]
++        label_list_i = label_list[i]
++        query_i, positive_map_label_to_token_i = create_queries_and_maps(
++            labels_i, label_list_i, additional_labels = cfg.DATASETS.SUPRESS_QUERY if cfg.DATASETS.USE_SUPRESS_QUERY else None, cfg = cfg)
++        
++        all_queries.append(query_i)
++        all_positive_map_label_to_token.append(positive_map_label_to_token_i)
++    # print("All queries", all_queries)
++    return all_queries, all_positive_map_label_to_token
++
+ def create_queries_and_maps_from_dataset(dataset, cfg):
+     categories = dataset.categories()
+     #one_hot = dataset.one_hot
+@@ -205,7 +239,7 @@ def create_queries_and_maps_from_dataset(dataset, cfg):
+         
+         all_queries.append(query_i)
+         all_positive_map_label_to_token.append(positive_map_label_to_token_i)
+-    print("All queries", all_queries)
++    # print("All queries", all_queries)
+     return all_queries, all_positive_map_label_to_token
+ 
+ def create_queries_and_maps(labels, label_list, additional_labels = None, cfg = None):
+@@ -253,12 +287,13 @@ def create_queries_and_maps(labels, label_list, additional_labels = None, cfg =
+             if _index != len(additional_labels) - 1:
+                 objects_query += separation_tokens
+ 
+-    print(objects_query)
++    # print(objects_query)
+ 
+     from transformers import AutoTokenizer
+     # tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+     if cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "bert-base-uncased":
+-        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
++        weight_path = os.path.join(os.environ["PRETRAIN_WEIGHT_DIR"], "glip", "bert-base-uncased")
++        tokenizer = AutoTokenizer.from_pretrained(weight_path)
+         tokenized = tokenizer(objects_query, return_tensors="pt")
+     elif cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "clip":
+         from transformers import CLIPTokenizerFast
+@@ -391,7 +426,7 @@ def inference(
+         output_folder=None,
+         cfg=None,
+         verbose=True,
+-        visualizer = None
++        visualizer = None,
+ ):
+     # convert to a torch.device for efficiency
+     try:
+@@ -546,6 +581,7 @@ def inference(
+             label_list = []
+             for index, i in enumerate(categories):
+                 if not no_background or (i["name"] != "__background__" and i['id'] != 0):
++                # if i["name"] != "__background__" and i['id'] != 0:
+                     label_list.append(i["name"])
+             visualizer.entities =  label_list
+             
+diff --git a/maskrcnn_benchmark/engine/predictor_glip.py b/maskrcnn_benchmark/engine/predictor_glip.py
+index c96bc94..6d28576 100644
+--- a/maskrcnn_benchmark/engine/predictor_glip.py
++++ b/maskrcnn_benchmark/engine/predictor_glip.py
+@@ -200,21 +200,6 @@ class GLIPDemo(object):
+             tokenized = self.tokenizer([original_caption], return_tensors="pt")
+             if custom_entity is None:
+                 tokens_positive = self.run_ner(original_caption)
+-            else:
+-                tokens_positive = []
+-                for entity in custom_entity:
+-                    if "char_bounds" in entity:
+-                        # char bounds provided
+-                        tokens_positive.append([list(entity["char_bounds"])])
+-                    else:
+-                        # online look for char bounds
+-                        for i, m in enumerate(re.finditer(entity["span"], original_caption)):
+-                            if i >= 1:
+-                                print(
+-                                    f"More than 1 match with the phrase {entity['span']} in {entity['span']}! We only take the first match."
+-                                )
+-                                break
+-                            tokens_positive.append([[m.start(), m.end()]])
+             print(tokens_positive)
+         # process positive map
+         positive_map = create_positive_map(tokenized, tokens_positive)
+diff --git a/maskrcnn_benchmark/engine/trainer.py b/maskrcnn_benchmark/engine/trainer.py
+index 2939a04..2daeac5 100644
+--- a/maskrcnn_benchmark/engine/trainer.py
++++ b/maskrcnn_benchmark/engine/trainer.py
+@@ -1,9 +1,6 @@
+ # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+ import datetime
+ import logging
+-import sys
+-import os
+-import math
+ import time
+ 
+ import torch
+@@ -15,7 +12,7 @@ from maskrcnn_benchmark.utils.ema import ModelEma
+ from maskrcnn_benchmark.utils.amp import autocast, GradScaler
+ from maskrcnn_benchmark.data.datasets.evaluation import evaluate
+ from .inference import inference
+-import pdb
++
+ 
+ def reduce_loss_dict(loss_dict):
+     """
+@@ -44,8 +41,10 @@ def reduce_loss_dict(loss_dict):
+ 
+ def do_train(
+         cfg,
++        args,
+         model,
+         data_loader,
++        dataset,
+         optimizer,
+         scheduler,
+         checkpointer,
+@@ -61,6 +60,7 @@ def do_train(
+     # meters = MetricLogger(delimiter="  ")
+     max_iter = len(data_loader)
+     start_iter = arguments["iteration"]
++    use_checkpoint = cfg.MODEL.USE_CHECKPOINT
+     model.train()
+     model_ema = None
+     if cfg.SOLVER.MODEL_EMA > 0:
+@@ -100,7 +100,6 @@ def do_train(
+         data_time = time.time() - end
+         iteration = iteration + 1
+         arguments["iteration"] = iteration
+-
+         images = images.to(device)
+         captions = None
+         try:
+@@ -118,42 +117,20 @@ def do_train(
+         if cfg.SOLVER.USE_AMP:
+             with autocast():
+                 if len(captions) > 0:
+-                    loss_dict = model(images, targets, captions, positive_map, greenlight_map = greenlight_map)
++                    loss_dict = model(images, targets, captions, positive_map, greenlight_map = greenlight_map, use_checkpoint=use_checkpoint)
+                 else:
+                     loss_dict = model(images, targets)
+             losses = sum(loss for loss in loss_dict.values())
+ 
+-            # save checkpoints for further debug if nan happens
+-            # loss_value = losses.item()
+-            # if not math.isfinite(loss_value):
+-            #     logging.error(f'=> loss is {loss_value}, stopping training')
+-            #     logging.error("Losses are : {}".format(loss_dict))
+-            #     time_str = time.strftime('%Y-%m-%d-%H-%M')
+-            #     fname = os.path.join(checkpointer.save_dir, f'{time_str}_states.pth')
+-            #     logging.info(f'=> save error state to {fname}')
+-            #     dict_to_save = {
+-            #         'x': images,
+-            #         'y': targets,
+-            #         'loss': losses,
+-            #         'states': model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+-            #     }
+-            #     if len(captions) > 0:
+-            #         dict_to_save['captions'] = captions
+-            #         dict_to_save['positive_map'] = positive_map
+-            #     torch.save(
+-            #             dict_to_save,
+-            #             fname
+-            #         )
+-
+-
+             if torch.isnan(losses) or torch.isinf(losses):
+                 logging.error("NaN encountered, ignoring")
+                 losses[losses != losses] = 0
+-            optimizer.zero_grad()
+             scaler.scale(losses).backward()
+             scaler.step(optimizer)
+-            scaler.update()
++            optimizer.zero_grad()
++            scaler.update()   
+             scheduler.step()
++            torch.cuda.empty_cache()
+         else:
+             if len(captions) > 0:
+                 loss_dict = model(images, targets, captions, positive_map)
+@@ -161,33 +138,12 @@ def do_train(
+                 loss_dict = model(images, targets)
+             losses = sum(loss for loss in loss_dict.values())
+ 
+-            # loss_value = losses.item()
+-            # if not math.isfinite(loss_value):
+-            #     logging.error(f'=> loss is {loss_value}, stopping training')
+-            #     time_str = time.strftime('%Y-%m-%d-%H-%M')
+-            #     fname = os.path.join(checkpointer.save_dir, f'{time_str}_states.pth')
+-            #     logging.info(f'=> save error state to {fname}')
+-            #     dict_to_save = {
+-            #         'x': images,
+-            #         'y': targets,
+-            #         'loss': losses,
+-            #         'states': model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+-            #     }
+-            #     if len(captions) > 0:
+-            #         dict_to_save['captions'] = captions
+-            #         dict_to_save['positive_map'] = positive_map
+-            #     torch.save(
+-            #         dict_to_save,
+-            #         fname
+-            #     )
+-                
+-
+             if torch.isnan(losses) or torch.isinf(losses):
+                 losses[losses != losses] = 0
+-            optimizer.zero_grad()
+-            losses.backward()
+-            optimizer.step()
+-            scheduler.step()
++                losses.backward()
++                optimizer.step()
++                optimizer.zero_grad()
++                scheduler.step()
+ 
+         # Adapt the weight decay: only support multiStepLR
+         if cfg.SOLVER.WEIGHT_DECAY_SCHEDULE and hasattr(scheduler, 'milestones'):
+@@ -245,9 +201,9 @@ def do_train(
+             if is_main_process():
+                 print("Evaluating")
+             eval_result = 0.0
+-            model.eval()
+             if cfg.SOLVER.TEST_WITH_INFERENCE:
+                 with torch.no_grad():
++                    model.eval()
+                     try:
+                         _model = model.module
+                     except:
+@@ -261,7 +217,7 @@ def do_train(
+                         expected_results_sigma_tol=cfg.TEST.EXPECTED_RESULTS_SIGMA_TOL,
+                         output_folder=None,
+                         cfg=cfg,
+-                        verbose=False
++                        verbose=False,
+                     )
+                     if is_main_process():
+                         eval_result = _result[0].results['bbox']['AP']
+@@ -293,6 +249,7 @@ def do_train(
+                         eval_result = eval_result.results['box_proposal']['AR@100']
+                     else:
+                         eval_result = eval_result.results['bbox']['AP']
++            torch.cuda.empty_cache()
+             model.train()
+ 
+             if model_ema is not None and cfg.SOLVER.USE_EMA_FOR_MONITOR:
+@@ -345,8 +302,8 @@ def do_train(
+                         print("\n\n\n\nAuto Termination at {}, current best {}\n\n\n".format(iteration, previous_best))
+                     break
+ 
+-        if iteration % checkpoint_period == 0:
+-            checkpointer.save("model_{:07d}".format(iteration), **arguments)
++        # if iteration % checkpoint_period == 0:
++        #     checkpointer.save("model_{:07d}".format(iteration), **arguments)
+         if iteration == max_iter:
+             checkpointer.save("model_final", **arguments)
+             break
+diff --git a/maskrcnn_benchmark/layers/sigmoid_focal_loss.py b/maskrcnn_benchmark/layers/sigmoid_focal_loss.py
+index 2de1bb4..5da9dbc 100644
+--- a/maskrcnn_benchmark/layers/sigmoid_focal_loss.py
++++ b/maskrcnn_benchmark/layers/sigmoid_focal_loss.py
+@@ -64,7 +64,7 @@ class SigmoidFocalLoss(nn.Module):
+         else:
+             loss_func = sigmoid_focal_loss_cpu
+ 
+-        loss = loss_func(logits, targets, self.gamma, self.alpha)
++        loss = loss_func(logits.float(), targets, self.gamma, self.alpha)
+         return loss.sum()
+ 
+     def __repr__(self):
+diff --git a/maskrcnn_benchmark/modeling/backbone/fpn.py b/maskrcnn_benchmark/modeling/backbone/fpn.py
+index 90bd853..95a5709 100644
+--- a/maskrcnn_benchmark/modeling/backbone/fpn.py
++++ b/maskrcnn_benchmark/modeling/backbone/fpn.py
+@@ -97,7 +97,10 @@ class FPN(nn.Module):
+             # mode='bilinear', align_corners=False)
+             last_inner = inner_lateral + inner_top_down
+             if self.drop_block and self.training:
+-                results.insert(0, getattr(self, layer_block)(self.drop_block(last_inner)))
++                if last_inner.dtype == torch.float16:
++                    results.insert(0, getattr(self, layer_block)(self.drop_block(last_inner).half()))
++                else:
++                    results.insert(0, getattr(self, layer_block)(self.drop_block(last_inner)))
+             else:
+                 results.insert(0, getattr(self, layer_block)(last_inner))
+ 
+diff --git a/maskrcnn_benchmark/modeling/backbone/swint.py b/maskrcnn_benchmark/modeling/backbone/swint.py
+index c0a162b..4faa2c8 100644
+--- a/maskrcnn_benchmark/modeling/backbone/swint.py
++++ b/maskrcnn_benchmark/modeling/backbone/swint.py
+@@ -372,6 +372,9 @@ class BasicLayer(nn.Module):
+         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+         attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+ 
++        if x.dtype == torch.float16:
++            attn_mask = attn_mask.half()
++            
+         for blk in self.blocks:
+             blk.H, blk.W = H, W
+             if self.use_checkpoint:
+@@ -479,7 +482,7 @@ class SwinTransformer(nn.Module):
+                  backbone_arch="SWINT-FPN-RETINANET"):
+         super(SwinTransformer, self).__init__()
+ 
+-        print("VISION BACKBONE USE GRADIENT CHECKPOINTING: ", use_checkpoint)
++        # print("VISION BACKBONE USE GRADIENT CHECKPOINTING: ", use_checkpoint)
+         
+         self.pretrain_img_size = pretrain_img_size
+         self.num_layers = len(depths)
+diff --git a/maskrcnn_benchmark/modeling/detector/generalized_vl_rcnn.py b/maskrcnn_benchmark/modeling/detector/generalized_vl_rcnn.py
+index 01f64c6..3e7d342 100644
+--- a/maskrcnn_benchmark/modeling/detector/generalized_vl_rcnn.py
++++ b/maskrcnn_benchmark/modeling/detector/generalized_vl_rcnn.py
+@@ -2,10 +2,10 @@
+ """
+ Implements the Generalized VL R-CNN framework
+ """
+-
+ import torch
+ from torch import nn
+ import torch.nn.functional as F
++from torch.utils.checkpoint import checkpoint
+ 
+ from maskrcnn_benchmark.structures.image_list import to_image_list
+ from maskrcnn_benchmark.structures.bounding_box import BoxList
+@@ -18,6 +18,7 @@ from ..roi_heads import build_roi_heads
+ from ..language_backbone import build_language_backbone
+ from transformers import AutoTokenizer
+ 
++import os
+ import random
+ import timeit
+ import pdb
+@@ -88,6 +89,10 @@ class GeneralizedVLRCNN(nn.Module):
+             else:
+                 self.tokenizer = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32",
+                                                                             from_slow=True)
++        elif cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "bert-base-uncased":
++            weight_path = os.path.join(os.environ["PRETRAIN_WEIGHT_DIR"], "glip", "bert-base-uncased")
++            if not os.path.exists(weight_path): raise Exception("No bert-base-uncased pretrained weight, please download it by download_pretrained_models.py")
++            self.tokenizer = AutoTokenizer.from_pretrained(weight_path)
+         else:
+             self.tokenizer = AutoTokenizer.from_pretrained(cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE)
+         self.tokenizer_vocab = self.tokenizer.get_vocab()
+@@ -177,7 +182,8 @@ class GeneralizedVLRCNN(nn.Module):
+         targets=None, 
+         captions=None, 
+         positive_map=None,
+-        greenlight_map=None):
++        greenlight_map=None,
++        use_checkpoint=False):
+         """
+         Arguments:
+             images (list[Tensor] or ImageList): images to be processed
+@@ -236,7 +242,10 @@ class GeneralizedVLRCNN(nn.Module):
+                     with torch.no_grad():
+                         language_dict_features = self.language_backbone(tokenizer_input)
+                 else:
+-                    language_dict_features = self.language_backbone(tokenizer_input)
++                    if use_checkpoint:
++                        language_dict_features = checkpoint(self.language_backbone, tokenizer_input)
++                    else:
++                        language_dict_features = self.language_backbone(tokenizer_input)
+                 
+                 # ONE HOT
+                 if self.cfg.DATASETS.ONE_HOT:
+diff --git a/maskrcnn_benchmark/modeling/language_backbone/bert_model.py b/maskrcnn_benchmark/modeling/language_backbone/bert_model.py
+index 4b69c54..b3dce26 100644
+--- a/maskrcnn_benchmark/modeling/language_backbone/bert_model.py
++++ b/maskrcnn_benchmark/modeling/language_backbone/bert_model.py
+@@ -1,3 +1,4 @@
++import os
+ from copy import deepcopy
+ import numpy as np
+ import torch
+@@ -12,12 +13,13 @@ class BertEncoder(nn.Module):
+         super(BertEncoder, self).__init__()
+         self.cfg = cfg
+         self.bert_name = cfg.MODEL.LANGUAGE_BACKBONE.MODEL_TYPE
+-        print("LANGUAGE BACKBONE USE GRADIENT CHECKPOINTING: ", self.cfg.MODEL.LANGUAGE_BACKBONE.USE_CHECKPOINT)
++        # print("LANGUAGE BACKBONE USE GRADIENT CHECKPOINTING: ", self.cfg.MODEL.LANGUAGE_BACKBONE.USE_CHECKPOINT)
+ 
+         if self.bert_name == "bert-base-uncased":
+-            config = BertConfig.from_pretrained(self.bert_name)
++            weight_path = os.path.join(os.environ["PRETRAIN_WEIGHT_DIR"], "glip", "bert-base-uncased")
++            config = BertConfig.from_pretrained(weight_path)
+             config.gradient_checkpointing = self.cfg.MODEL.LANGUAGE_BACKBONE.USE_CHECKPOINT
+-            self.model = BertModel.from_pretrained(self.bert_name, add_pooling_layer=False, config=config)
++            self.model = BertModel.from_pretrained(weight_path, add_pooling_layer=False, config=config)
+             self.language_dim = 768
+         elif self.bert_name == "roberta-base":
+             config = RobertaConfig.from_pretrained(self.bert_name)
+diff --git a/maskrcnn_benchmark/modeling/language_backbone/clip_model.py b/maskrcnn_benchmark/modeling/language_backbone/clip_model.py
+index 781f4f4..19deb1b 100644
+--- a/maskrcnn_benchmark/modeling/language_backbone/clip_model.py
++++ b/maskrcnn_benchmark/modeling/language_backbone/clip_model.py
+@@ -72,7 +72,7 @@ class CLIPTransformer(nn.Module):
+ 
+         self.cfg = cfg
+         self.use_checkpoint = cfg.MODEL.LANGUAGE_BACKBONE.USE_CHECKPOINT
+-        print("LANGUAGE BACKBONE USE GRADIENT CHECKPOINTING: ", self.cfg.MODEL.LANGUAGE_BACKBONE.USE_CHECKPOINT)
++        # print("LANGUAGE BACKBONE USE GRADIENT CHECKPOINTING: ", self.cfg.MODEL.LANGUAGE_BACKBONE.USE_CHECKPOINT)
+ 
+         self.context_length = self.cfg.MODEL.CLIP.CONTEXT_LENGTH
+         self.width = self.cfg.MODEL.CLIP.WIDTH
+diff --git a/maskrcnn_benchmark/modeling/rpn/loss.py b/maskrcnn_benchmark/modeling/rpn/loss.py
+index 097fdc5..54c08f8 100644
+--- a/maskrcnn_benchmark/modeling/rpn/loss.py
++++ b/maskrcnn_benchmark/modeling/rpn/loss.py
+@@ -3,6 +3,7 @@
+ This file contains specific functions for computing losses on the RPN
+ file
+ """
++import os
+ 
+ import torch
+ from torch import nn
+@@ -543,6 +544,9 @@ class ATSSLossComputation(torch.nn.Module):
+             else:
+                 self.tokenizer = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32",
+                                                                             from_slow=True)
++        elif self.cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "bert-base-uncased":
++            weight_path = os.path.join(os.environ["PRETRAIN_WEIGHT_DIR"], "glip", "bert-base-uncased")
++            self.tokenizer = AutoTokenizer.from_pretrained(weight_path)
+         else:
+             self.tokenizer = AutoTokenizer.from_pretrained(self.lang)
+ 
+@@ -608,6 +612,7 @@ class ATSSLossComputation(torch.nn.Module):
+         return tot_loss
+ 
+     def GIoULoss(self, pred, target, anchor, weight=None):
++        pred = pred.float()
+         pred_boxes = self.box_coder.decode(pred.view(-1, 4), anchor.view(-1, 4))
+         pred_x1 = pred_boxes[:, 0]
+         pred_y1 = pred_boxes[:, 1]
+diff --git a/maskrcnn_benchmark/modeling/rpn/vldyhead.py b/maskrcnn_benchmark/modeling/rpn/vldyhead.py
+index 2edbb5d..8f7f4c3 100644
+--- a/maskrcnn_benchmark/modeling/rpn/vldyhead.py
++++ b/maskrcnn_benchmark/modeling/rpn/vldyhead.py
+@@ -1,3 +1,5 @@
++import os
++
+ import torch
+ import torch.nn.functional as F
+ from torch import nn
+@@ -363,7 +365,7 @@ class VLFuse(torch.nn.Module):
+             self.dummy_tensor = torch.ones(1, dtype=torch.float32, requires_grad=True)
+ 
+         # early fusion module
+-        print("EARLY FUSION ON, USING {}".format(cfg.MODEL.DYHEAD.FUSE_CONFIG.TYPE))
++        # print("EARLY FUSION ON, USING {}".format(cfg.MODEL.DYHEAD.FUSE_CONFIG.TYPE))
+         if cfg.MODEL.DYHEAD.FUSE_CONFIG.TYPE == "MHA-S":
+             # single-direction (text->image)
+             # text -> image
+@@ -563,7 +565,9 @@ class VLDyHead(torch.nn.Module):
+         self.cfg = cfg
+         # bert_cfg = BertConfig.from_pretrained(cfg.MODEL.LANGUAGE_BACKBONE.MODEL_TYPE)
+         if cfg.MODEL.LANGUAGE_BACKBONE.MODEL_TYPE == "bert-base-uncased":
+-            lang_cfg = BertConfig.from_pretrained(cfg.MODEL.LANGUAGE_BACKBONE.MODEL_TYPE)
++            cfg["gradient_checkpointing"] = True
++            weight_path = os.path.join(os.environ["PRETRAIN_WEIGHT_DIR"], "glip", "bert-base-uncased")
++            lang_cfg = BertConfig.from_pretrained(weight_path)
+         elif cfg.MODEL.LANGUAGE_BACKBONE.MODEL_TYPE == "clip":
+             lang_cfg = cfg
+         else:
+diff --git a/maskrcnn_benchmark/solver/build.py b/maskrcnn_benchmark/solver/build.py
+index 4456f91..847875d 100644
+--- a/maskrcnn_benchmark/solver/build.py
++++ b/maskrcnn_benchmark/solver/build.py
+@@ -43,7 +43,7 @@ def make_optimizer(cfg, model):
+ 
+         if 'norm' in key or 'Norm' in key:
+             weight_decay *= cfg.SOLVER.WEIGHT_DECAY_NORM_FACTOR
+-            print("Setting weight decay of {} to {}".format(key, weight_decay))
++            # print("Setting weight decay of {} to {}".format(key, weight_decay))
+ 
+         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
+ 
+@@ -96,7 +96,7 @@ def make_lr_scheduler(cfg, optimizer):
+             warmup_method=cfg.SOLVER.WARMUP_METHOD,
+             eta_min=cfg.SOLVER.MIN_LR,
+             patience=cfg.SOLVER.STEP_PATIENCE,
+-            verbose=True
++            verbose=False
+         )
+ 
+     else:
+diff --git a/maskrcnn_benchmark/utils/model_serialization.py b/maskrcnn_benchmark/utils/model_serialization.py
+index b8707ce..ea365d1 100644
+--- a/maskrcnn_benchmark/utils/model_serialization.py
++++ b/maskrcnn_benchmark/utils/model_serialization.py
+@@ -98,7 +98,7 @@ def align_and_update_state_dicts(model_state_dict, loaded_state_dict, reshape_ke
+         groups = _group_checkpoint_keys(missing_keys)
+         msg_per_group = sorted(k + _group_to_str(v) for k, v in groups.items())
+         msg = '\n'.join(sorted(msg_per_group))
+-        logger.warning('Some layers unloaded with pre-trained weight: \n' + msg)
++        # logger.warning('Some layers unloaded with pre-trained weight: \n' + msg)
+ 
+ def strip_prefix_if_present(state_dict, prefix):
+     keys = sorted(state_dict.keys())

@@ -1,0 +1,33 @@
+metadata:
+  name: lsl_sam_demo
+  namespace: cvat
+  annotations:
+    name: lsl_sam
+    type: detector
+    framework: pytorch
+    spec: |
+      [{ "id": 1, "name": "class_name" }]
+spec:
+  description: LSL Tools sam model 
+  runtime: 'python:3.8'
+  handler: main:handler
+  eventTimeout: 120s
+  readinessTimeoutSeconds: 175
+  build:
+    image: docker-image-name
+    baseImage: zerorpc_demo:v1
+
+  triggers:
+    myHttpTrigger:
+      maxWorkers: 1
+      kind: 'http'
+      workerAvailabilityTimeoutMilliseconds: 120000
+      attributes:
+        maxRequestBodySize: 99554432 # 32MB
+
+  platform:
+    attributes:
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume
